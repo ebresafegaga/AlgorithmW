@@ -1,4 +1,4 @@
-module AlgorithmW  where 
+module AlgorithmW where 
 
 import Data.Maybe (fromMaybe)
 import qualified Data.Map as Map
@@ -16,11 +16,11 @@ data Exp = EVar String
          | EApp Exp Exp 
          | EAbs String Exp
          | ELet String Exp Exp 
-         deriving (Eq, Ord)
+         deriving (Eq, Ord, Show)
 
 data Lit = LInt Integer
          | LBool Bool 
-         deriving (Eq, Ord)
+         deriving (Eq, Ord, Show)
 
 data Type = TVar String 
           | TInt 
@@ -33,6 +33,10 @@ data Scheme = Scheme [String] Type
 type Subst = Map.Map String Type 
 
 instance Show Type where 
+    show (TVar t) = t
+    show TInt = "int"
+    show TBool = "bool"
+    show (TFun a b) = "(" ++ show a ++ "->" ++ show b ++ ")" 
 
 nullSubst :: Subst 
 nullSubst = Map.empty
@@ -56,8 +60,12 @@ instance Types Type where
 
 instance Types Scheme where 
     ftv (Scheme vars t) = ftv t \\ Set.fromList vars
-    apply s (Scheme vars t) = Scheme vars (apply (foldr Map.delete s vars) t)
+    apply s (Scheme vars t) = Scheme vars (apply s' t)
+        where s' = foldr Map.delete s vars
 
+instance Show Scheme where 
+    show (Scheme vars t) = "forall " ++ v ++ show t
+        where v = foldr (\x s -> x  ++ ". " ++ s) "" vars 
 
 instance Types a => Types [a] where 
     apply s = map (apply s)
@@ -120,3 +128,59 @@ varBind u t
     | t == TVar u = return nullSubst
     | u `Set.member` ftv t = throwError $ "occur checks fails: " ++ u ++ "vs. " ++ show t
     | otherwise = return (Map.singleton u t)
+
+
+tiLit :: TypeEnv -> Lit -> TI (Subst, Type)
+tiLit _ (LInt _) = return (nullSubst, TInt)
+tiLit _ (LBool _) = return (nullSubst, TBool)
+
+ti :: TypeEnv -> Exp -> TI (Subst, Type)
+ti (TypeEnv env) (EVar n) = 
+    case Map.lookup n env of 
+        Nothing -> throwError $ "unbound variable: " ++ n
+        Just sigma -> do 
+            t <- instantiate sigma
+            return (nullSubst, t)
+ti env (ELit l) = tiLit env l
+ti env (EAbs n e) = do
+    tv <- newTypVar "a"
+    let TypeEnv env' = remove env n
+    let env'' = TypeEnv (env' `Map.union` Map.singleton n (Scheme [] tv))
+    (s1, t1) <- ti env'' e
+    return (s1, TFun (apply s1 tv) t1)
+ti env (EApp e1 e2) = do 
+    tv <- newTypVar "a"
+    (s1, t1) <- ti env e1
+    (s2, t2) <- ti (apply s1 env) e2 
+    s3 <- mgu (apply s2 t1) (TFun t2 tv) 
+    return (s3 `composeSubst` s2 `composeSubst` s1 `composeSubst` s1, apply s3 tv) 
+ti env (ELet x e1 e2) = do 
+    (s1, t1) <- ti env e1 
+    let TypeEnv env' = remove env x
+    let t' = generalize (apply s1 env) t1
+    let env'' = TypeEnv (Map.insert x t' env')
+    (s2, t2) <- ti (apply s1 env'') e2
+    return (s1 `composeSubst` s2, t2)
+
+typeInference :: Map.Map String Scheme -> Exp -> TI Type 
+typeInference env e = do 
+    (s, t) <- ti (TypeEnv env) e
+    return (apply s t)
+
+
+-- tests 
+e0 = ELet "id" (EAbs "x" (EVar "x")) (EVar "id")
+e1 = ELet "id" (EAbs "x" (EVar "x")) (EApp (EVar "id") (EVar "id"))
+e2 = ELet "id" (EAbs "x" (ELet "y" (EVar "x") (EVar "y"))) (EApp (EVar "id") (EVar "id"))
+e3 = ELet "id" (EAbs "x" (ELet "y" (EVar "x") (EVar "y"))) (EApp (EApp (EVar "id") (EVar "id")) (ELit (LInt 2)))
+e4 = ELet "id" (EAbs "x" (EApp (EVar "x") (EVar "x"))) (EVar "id")
+e5 = EAbs "m" (ELet "y" (EVar "m") (ELet "x" (EApp (EVar "y") (ELit (LBool True))) (EVar "x")))
+
+
+
+test :: Exp -> IO ()
+test e = do 
+    (res, _) <- runTI (typeInference Map.empty e)
+    case res of 
+        Left err -> putStrLn $ "error: " ++ err
+        Right t -> putStrLn $ show e ++ " :: " ++ show t 
