@@ -90,7 +90,7 @@ data TIEnv = TIEnv{}
 data TIState = TIState{tiSupply :: Int,
                        tiSubst  :: Subst}
 
-type TI a = ErrorT String (ReaderT TIEnv (StateT TIState IO)) a
+type TI a = ErrorT String (ReaderT TIEnv (StateT TIState IO)) a 
 
 runTI :: TI a -> IO (Either String a, TIState)
 runTI t = do 
